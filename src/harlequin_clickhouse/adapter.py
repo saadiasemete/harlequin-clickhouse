@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from typing import Any, Sequence
 
 from harlequin import (
@@ -8,13 +9,157 @@ from harlequin import (
     HarlequinCursor,
 )
 from harlequin.autocomplete.completion import HarlequinCompletion
-from harlequin.catalog import Catalog, CatalogItem
+from harlequin.catalog import Catalog, CatalogItem, InteractiveCatalogItem
 from harlequin.exception import HarlequinConnectionError, HarlequinQueryError
 from clickhouse_driver.dbapi import connect, Connection
 from clickhouse_driver.dbapi.cursor import Cursor
 from textual_fastdatatable.backend import AutoBackendType
 
 from harlequin_clickhouse.cli_options import CLICKHOUSE_OPTIONS
+
+# from harlequin_clickhouse.menu_items import ClickhouseDatabaseCatalogItem, ClickhouseTableCatalogItem, ClickhouseColumnCatalogItem
+# from harlequin_clickhouse.short_types import get_short_type
+
+def get_short_type(type_name: str) -> str:
+    MAPPING = {
+        # columns
+        "UInt8": "#",
+        "UInt16": "#",
+        "UInt32": "#",
+        "UInt64": "##",
+        "UInt128": "##",
+        "UInt256": "##",
+        "Int8": "#",
+        "Int16": "#",
+        "Int32": "#",
+        "Int64": "##",
+        "Int128": "##",
+        "Int256": "##",
+        "Float32": "#.#",
+        "Float64": "#.#",
+        "Decimal": "#.#",
+        "Boolean": "t/f",
+        "String": "s",
+        "FixedString": "s",
+        "Date": "d",
+        "Date32": "d",
+        "DateTime": "ts",
+        "DateTime64": "ts",
+        "JSON": "{}",
+        "UUID": "uid",
+        "Enum": "e",
+        "LowCardinality": "lc",
+        "Array": "[]",
+        "Map": "{}->{}",
+        "SimpleAggregateFunction": "saf",
+        "AggregateFunction": "af",
+        "Nested": "tbl",
+        "Tuple": "()",
+        "Nullable": "?",
+        "IPv4": "ip",
+        "IPv6": "ip",
+        "Point": "•",
+        "Ring": "○",
+        "Polygon": "▽",
+        "MultiPolygon": "▽▽",
+        "Expression": "expr",
+        "Set": "set",
+        "Nothing": "nil",
+        "Interval": "|-|",
+        # databases
+        "Atomic": "atm",
+        "Lazy": "lz",
+        "Replicated": "rep",
+        "PostgreSQL": "pg",
+        "MySQL": "my",
+        "SQLite": "sq",
+        "Backup": "bak",
+        "MaterializedPostgreSQL": "mpg",
+        "DataLakeCatalog": "dlc",
+    }
+    return MAPPING.get(type_name.split("(")[0].split(" ")[0], "?")
+
+class ClickhouseDatabaseCatalogItem(InteractiveCatalogItem):
+    def fetch_children(self) -> list[ClickhouseTableCatalogItem]:
+
+        conn: HarlequinClickHouseConnection = self.connection
+
+        def table_fqdn(table: str) -> str:
+
+            return '.'.join([self.qualified_identifier, table])
+        
+        def table_generator(tables) -> ClickhouseTableCatalogItem:
+            for (table, engine) in tables:
+                conn.execute(f"SELECT 'tryna add table {table} witn engine {engine}'")
+                yield CatalogItem(
+                    qualified_identifier=table_fqdn(table),
+                    query_name=table_fqdn(table),
+                    label=table,
+                    type_label=get_short_type(engine),
+                    # connection=self.connection,
+                )
+            conn.execute(f"SELECT '{self.qualified_identifier}: TableCatalog finished being formed'")
+        
+
+        
+        # with conn.cursor() as cur, conn.cursor() as debug_cursor:
+        conn.execute(f"SELECT '{self.qualified_identifier}: TableCatalog started being formed'")
+        tables = conn.execute(
+            f"SELECT name, engine FROM system.tables WHERE database = '{self.qualified_identifier}'"
+        ).fetchall()
+
+
+        conn.execute(f"SELECT 'Tables fetched for {self.qualified_identifier}'")
+        """
+        table_items: list[ClickhouseTableCatalogItem] = []
+        for (table, engine) in tables:
+            try:
+                conn.execute(f"SELECT 'tryna add table {table} witn engine {engine}'")
+                #table_item = ClickhouseTableCatalogItem(
+                table_item = 
+                table_items.append(table_item)
+                conn.execute(f"SELECT 'added table {table} witn engine {engine}'")
+            except Exception as e:
+                conn.execute(f"SELECT 'cant get tables: error {str(e)}'")
+                raise e
+        #
+        """
+        return table_generator(tables)
+
+
+class ClickhouseTableCatalogItem(InteractiveCatalogItem):
+    def fetch_children(self):
+
+        def column_fqdn(column):
+
+            return '.'.join([self.qualified_identifier, column])
+        
+        conn: Connection = self.connection
+        with conn.cursor() as cur:
+            columns = cur.execute(
+                f"SELECT name, type FROM system.columns WHERE CONCAT(database, '.', table) = '{self.qualified_identifier}'"
+            ).fetchall()
+
+            cur.execute(f"Columns fetched for {self.qualified_identifier}")
+            # for (column, data_type) in columns:
+            column_items: list[ClickhouseColumnCatalogItem] = [
+                ClickhouseColumnCatalogItem(
+                    qualified_identifier=column_fqdn(column),
+                    query_name=column_fqdn(column),
+                    label=column,
+                    type_label=get_short_type(data_type),
+                    connection=self.connection,
+                )
+                for (column, data_type) in columns
+            ]
+        return column_items
+
+        
+
+
+class ClickhouseColumnCatalogItem(InteractiveCatalogItem):
+    pass
+        
 
 
 class HarlequinClickHouseCursor(HarlequinCursor):
@@ -43,6 +188,10 @@ class HarlequinClickHouseCursor(HarlequinCursor):
                 msg=str(e),
                 title="Harlequin encountered an error while executing your query.",
             ) from e
+    
+    def fetchone(self) -> tuple | None:
+        yield from self.cur.fetch_one()
+
 
 
 class HarlequinClickHouseConnection(HarlequinConnection):
@@ -85,7 +234,7 @@ class HarlequinClickHouseConnection(HarlequinConnection):
             else:
                 return None
 
-    def get_catalog(self) -> Catalog:
+    def get_catalog_deprecated(self) -> Catalog:
         # This is a small hack to overcome the fact that clickhouse doesn't have the concept of schemas
         databases = self._list_databases()
         database_items: list[CatalogItem] = []
@@ -122,6 +271,30 @@ class HarlequinClickHouseConnection(HarlequinConnection):
                 )
             )
         return Catalog(items=database_items)
+    
+    def get_catalog(self) -> Catalog:
+        try:
+            self.conn.cursor().execute(f"SELECT 'LD started'")
+            databases = self._list_databases()
+            self.conn.cursor().execute(f"SELECT 'LD finished'")
+            database_items: list[ClickhouseDatabaseCatalogItem] = []
+            self.conn.cursor().execute(f"SELECT 'DI initiated'")
+
+            for (db, engine) in self._list_databases():
+                self.conn.cursor().execute(f"SELECT '{db}', '{engine}'")
+                database_items.append(
+                    ClickhouseDatabaseCatalogItem(
+                            qualified_identifier=db,
+                            query_name=db,
+                            label=db,
+                            type_label=get_short_type(engine),
+                            connection=self,
+                        )
+                )
+            self.conn.cursor().execute(f"SELECT 'CatalogFormed'")
+            return Catalog(items=database_items)
+        except Exception as e:
+            self.conn.cursor().execute(f"SELECT '{e}'")
 
     def get_completions(self) -> list[HarlequinCompletion]:
         extra_keywords = ["foo", "bar", "baz"]
@@ -142,101 +315,16 @@ class HarlequinClickHouseConnection(HarlequinConnection):
             cur.execute(
                 """
                 SELECT
-                    name
+                    name, engine
                 FROM system.databases
                 where name not in
                     ('INFORMATION_SCHEMA', 'system', 'information_schema');
             """
             )
-            results: list[tuple[str]] = cur.fetchall()
+            results: list[tuple[str, str]] = cur.fetchall()
+            #cur.execute(str(results))
         return results
-
-    def _list_relations_in_database(self, db: str) -> list[tuple[str, str]]:
-        conn: Connection = self.conn
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    table_name,
-                    table_type
-                FROM information_schema.tables
-                WHERE
-                    table_schema = '{db}'
-                ORDER BY table_name asc
-                    """,
-            )
-            results: list[tuple[str]] = cur.fetchall()
-        return results
-
-    def _list_columns_in_relation(
-        self,
-        db: str,
-        relation: str,
-    ) -> list[tuple[str, str]]:
-        conn: Connection = self.conn
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                select
-                    column_name, data_type
-                from information_schema.columns
-                where
-                    table_schema = '{db}'
-                    and table_name = '{relation}'
-                    order by ordinal_position asc
-                    """,
-            )
-            results: list[tuple[str]] = cur.fetchall()
-        return results
-
-    @staticmethod
-    def _get_short_type(type_name: str) -> str:
-        MAPPING = {
-            "UInt8": "#",
-            "UInt16": "#",
-            "UInt32": "#",
-            "UInt64": "##",
-            "UInt128": "##",
-            "UInt256": "##",
-            "Int8": "#",
-            "Int16": "#",
-            "Int32": "#",
-            "Int64": "##",
-            "Int128": "##",
-            "Int256": "##",
-            "Float32": "#.#",
-            "Float64": "#.#",
-            "Decimal": "#.#",
-            "Boolean": "t/f",
-            "String": "s",
-            "FixedString": "s",
-            "Date": "d",
-            "Date32": "d",
-            "DateTime": "ts",
-            "DateTime64": "ts",
-            "JSON": "{}",
-            "UUID": "uid",
-            "Enum": "e",
-            "LowCardinality": "lc",
-            "Array": "[]",
-            "Map": "{}->{}",
-            "SimpleAggregateFunction": "saf",
-            "AggregateFunction": "af",
-            "Nested": "tbl",
-            "Tuple": "()",
-            "Nullable": "?",
-            "IPv4": "ip",
-            "IPv6": "ip",
-            "Point": "•",
-            "Ring": "○",
-            "Polygon": "▽",
-            "MultiPolygon": "▽▽",
-            "Expression": "expr",
-            "Set": "set",
-            "Nothing": "nil",
-            "Interval": "|-|",
-        }
-        return MAPPING.get(type_name.split("(")[0].split(" ")[0], "?")
+    
 
 
 class HarlequinClickHouseAdapter(HarlequinAdapter):
